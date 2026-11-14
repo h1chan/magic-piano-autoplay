@@ -4,9 +4,23 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Protocol
 
 from .layout import describe, token_to_stroke
-from .vkbd import KEY_CODES, SHIFT, VirtualKeyboard
+
+
+class Keyboard(Protocol):
+    """What the player needs from an input driver."""
+
+    def press(self, key: str, shift: bool) -> None: ...
+
+    def release(self, key: str, shift: bool) -> None: ...
+
+    def release_all(self) -> None: ...
+
+
+class PlaybackAborted(RuntimeError):
+    """The focus guard stopped playback before a key could go elsewhere."""
 
 
 @dataclass(frozen=True)
@@ -62,55 +76,32 @@ def wait_until(target: float) -> None:
 
 
 class Player:
-    def __init__(self, keyboard: VirtualKeyboard, pause_shift: bool = True):
+    def __init__(self, keyboard: Keyboard):
         self.keyboard = keyboard
-        # Roblox reads Shift at key-down. If Shift is held for a black key,
-        # a white key pressed meanwhile would sound as a sharp, so lift Shift
-        # for that key press and engage it again right after.
-        self.pause_shift = pause_shift
         self._held: dict[str, bool] = {}
-        self._shift_refs = 0
 
     def _press(self, char: str, shift: bool) -> bool:
         # The same key cannot sound twice, and a sharp cannot be added while
         # its natural key is held (Shift would retrigger the same key).
         if char in self._held:
             return False
-        code = KEY_CODES[char]
         self._held[char] = shift
-        if shift:
-            if self._shift_refs == 0:
-                self.keyboard.key_down(SHIFT)
-            self._shift_refs += 1
-            self.keyboard.key_down(code)
-        elif self.pause_shift and self._shift_refs > 0:
-            self.keyboard.key_up(SHIFT)
-            self.keyboard.key_down(code)
-            self.keyboard.key_down(SHIFT)
-        else:
-            self.keyboard.key_down(code)
+        self.keyboard.press(char, shift)
         return True
 
     def _release(self, char: str, shift: bool) -> None:
         if self._held.get(char) != shift:
             return
         del self._held[char]
-        code = KEY_CODES[char]
-        if not shift and self.pause_shift and self._shift_refs > 0:
-            self.keyboard.key_up(SHIFT)
-            self.keyboard.key_up(code)
-            self.keyboard.key_down(SHIFT)
-        else:
-            self.keyboard.key_up(code)
-        if shift:
-            self._shift_refs -= 1
-            if self._shift_refs == 0:
-                self.keyboard.key_up(SHIFT)
+        self.keyboard.release(char, shift)
 
-    def play(self, events: list[Event], delay: float = 0.0) -> None:
+    def play(self, events: list[Event], delay: float = 0.0, guard=None) -> None:
         start = time.perf_counter() + delay
         for event in events:
             wait_until(start + event.time)
+            if guard is not None and not guard():
+                self.release_all()
+                raise PlaybackAborted("focus left the target window")
             if event.down:
                 self._press(event.char, event.shift)
             else:
@@ -119,9 +110,7 @@ class Player:
     def release_all(self) -> None:
         for char, shift in list(self._held.items()):
             self._release(char, shift)
-        while self._shift_refs > 0:
-            self.keyboard.key_up(SHIFT)
-            self._shift_refs -= 1
+        self.keyboard.release_all()
 
 
 def format_events(events: list[Event]) -> str:

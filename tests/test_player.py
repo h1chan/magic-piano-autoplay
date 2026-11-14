@@ -1,19 +1,29 @@
 import unittest
 
 from magic_piano.layout import build_layout
-from magic_piano.player import Event, Player, build_events
-from magic_piano.vkbd import KEY_CODES, SHIFT
+from magic_piano.player import (
+    Event,
+    PlaybackAborted,
+    Player,
+    build_events,
+)
 
 
 class FakeKeyboard:
+    """Records the player-level calls, not raw key codes."""
+
     def __init__(self):
         self.calls = []
+        self.released = False
 
-    def key_down(self, code):
-        self.calls.append(("down", code))
+    def press(self, key, shift):
+        self.calls.append(("press", key, shift))
 
-    def key_up(self, code):
-        self.calls.append(("up", code))
+    def release(self, key, shift):
+        self.calls.append(("release", key, shift))
+
+    def release_all(self):
+        self.released = True
 
 
 class BuildEventsTest(unittest.TestCase):
@@ -49,88 +59,32 @@ class BuildEventsTest(unittest.TestCase):
         events, skipped = build_events([("1", "!", "3")], layout, beat=1.0)
         self.assertEqual(skipped, [])
         downs = [event for event in events if event.down]
-        self.assertEqual([(event.char, event.shift) for event in downs],
-                         [("1", False), ("3", False), ("1", True)])
+        self.assertEqual(
+            [(event.char, event.shift) for event in downs],
+            [("1", False), ("3", False), ("1", True)],
+        )
 
 
 class PlayerTest(unittest.TestCase):
-    def test_shift_wraps_sharp_note(self):
+    def test_sharp_note_carries_shift(self):
         keyboard = FakeKeyboard()
-        player = Player(keyboard)
-        player.play([Event(0, True, "1", True), Event(0.01, False, "1", True)])
+        Player(keyboard).play([Event(0, True, "1", True), Event(0.01, False, "1", True)])
         self.assertEqual(
             keyboard.calls,
-            [
-                ("down", SHIFT),
-                ("down", KEY_CODES["1"]),
-                ("up", KEY_CODES["1"]),
-                ("up", SHIFT),
-            ],
+            [("press", "1", True), ("release", "1", True)],
         )
 
     def test_plain_note_has_no_shift(self):
         keyboard = FakeKeyboard()
         Player(keyboard).play([Event(0, True, "q", False), Event(0.01, False, "q", False)])
-        self.assertEqual(keyboard.calls, [("down", KEY_CODES["q"]), ("up", KEY_CODES["q"])])
-
-    def test_overlapping_sharps_keep_shift_held(self):
-        keyboard = FakeKeyboard()
-        player = Player(keyboard)
-        player.play(
-            [
-                Event(0, True, "1", True),
-                Event(0.01, True, "2", True),
-                Event(0.02, False, "1", True),
-                Event(0.03, False, "2", True),
-            ]
-        )
-        downs = [call for call in keyboard.calls if call[1] == SHIFT and call[0] == "down"]
-        ups = [call for call in keyboard.calls if call[1] == SHIFT and call[0] == "up"]
-        self.assertEqual(len(downs), 1)
-        self.assertEqual(len(ups), 1)
-        self.assertEqual(keyboard.calls[-1], ("up", SHIFT))
-
-    def test_white_key_lifts_shift_temporarily(self):
-        keyboard = FakeKeyboard()
-        player = Player(keyboard)
-        player.play(
-            [
-                Event(0, True, "1", True),    # C#: Shift down
-                Event(0.01, True, "3", False),  # E while C# held
-                Event(0.02, False, "3", False),
-                Event(0.03, False, "1", True),
-            ]
-        )
         self.assertEqual(
-            keyboard.calls,
-            [
-                ("down", SHIFT),
-                ("down", KEY_CODES["1"]),
-                ("up", SHIFT),
-                ("down", KEY_CODES["3"]),
-                ("down", SHIFT),
-                ("up", SHIFT),
-                ("up", KEY_CODES["3"]),
-                ("down", SHIFT),
-                ("up", KEY_CODES["1"]),
-                ("up", SHIFT),
-            ],
-        )
-
-    def test_shift_pause_can_be_disabled(self):
-        keyboard = FakeKeyboard()
-        player = Player(keyboard, pause_shift=False)
-        player.play([Event(0, True, "1", True), Event(0.01, True, "3", False)])
-        self.assertEqual(
-            keyboard.calls,
-            [("down", SHIFT), ("down", KEY_CODES["1"]), ("down", KEY_CODES["3"])],
+            keyboard.calls, [("press", "q", False), ("release", "q", False)]
         )
 
     def test_shift_conflict_is_skipped(self):
         # 'q' and 'Q' are different notes but the same physical key.
         keyboard = FakeKeyboard()
-        player = Player(keyboard)
-        player.play(
+        Player(keyboard).play(
             [
                 Event(0, True, "q", False),
                 Event(0.01, True, "q", True),
@@ -138,7 +92,42 @@ class PlayerTest(unittest.TestCase):
                 Event(0.03, False, "q", False),
             ]
         )
-        self.assertEqual(keyboard.calls, [("down", KEY_CODES["q"]), ("up", KEY_CODES["q"])])
+        self.assertEqual(
+            keyboard.calls, [("press", "q", False), ("release", "q", False)]
+        )
+
+    def test_release_all_clears_held_notes(self):
+        keyboard = FakeKeyboard()
+        player = Player(keyboard)
+        player.play(
+            [
+                Event(0, True, "1", False),
+                Event(0, True, "2", True),
+                Event(0.01, False, "1", False),
+            ]
+        )
+        player.release_all()
+        self.assertEqual(
+            keyboard.calls,
+            [
+                ("press", "1", False),
+                ("press", "2", True),
+                ("release", "1", False),
+                ("release", "2", True),
+            ],
+        )
+        self.assertTrue(keyboard.released)
+
+    def test_guard_aborts_and_releases(self):
+        keyboard = FakeKeyboard()
+        player = Player(keyboard)
+        with self.assertRaises(PlaybackAborted):
+            player.play(
+                [Event(0, True, "1", False), Event(0.01, True, "3", False)],
+                guard=lambda: False,
+            )
+        self.assertEqual(keyboard.calls, [])
+        self.assertTrue(keyboard.released)
 
 
 if __name__ == "__main__":

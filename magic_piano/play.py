@@ -1,22 +1,40 @@
 """CLI entry point.
 
     python3 -m magic_piano.play --list-layout
+    python3 -m magic_piano.play --list-windows
     python3 -m magic_piano.play songs/twinkle.song --dry-run
-    python3 -m magic_piano.play songs/fur_elise.mid --dry-run
     python3 -m magic_piano.play songs/fur_elise.mid --speed 0.8
+    python3 -m magic_piano.play songs/fur_elise.mid --global
+
+By default keys are delivered to the Sober window only, through Hyprland.
+``--global`` falls back to a system-wide uinput keyboard for other targets.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from collections import defaultdict
 
 from . import arrange
 from . import layout as layout_mod
 from . import midi_file
 from . import song as song_mod
-from .player import Event, Player, build_events, format_events
+from .hypr import (
+    DEFAULT_TARGET,
+    Hyprland,
+    HyprlandError,
+    HyprlandKeyboard,
+    Window,
+)
+from .player import (
+    Event,
+    PlaybackAborted,
+    Player,
+    build_events,
+    format_events,
+)
 from .vkbd import VirtualKeyboard
 
 
@@ -32,6 +50,15 @@ def _print_layout(mapping: dict[int, tuple[str, bool]]) -> None:
     print(f"range: {layout_mod.midi_to_note(notes[0])} .. {layout_mod.midi_to_note(notes[-1])}")
     for note in notes:
         print(f"{layout_mod.midi_to_note(note):>4}  {layout_mod.describe(mapping[note])}")
+
+
+def _print_windows(hypr: Hyprland) -> None:
+    windows = hypr.windows()
+    if not windows:
+        print("no windows")
+        return
+    for window in windows:
+        print(f"{window.address}  {window.class_name:<32}  {window.title}")
 
 
 def _parse_tracks(value: str | None) -> set[int] | None:
@@ -107,10 +134,48 @@ def _load_song(path: str, args, mapping):
     return events
 
 
+def _resolve_target(args) -> tuple[str | None, str, Hyprland | None]:
+    """Return (selector, label, client); selector None means system-wide."""
+    if args.global_input:
+        try:
+            hypr = Hyprland()
+        except HyprlandError:
+            hypr = None
+        return None, "system-wide (uinput)", hypr
+
+    hypr = Hyprland()
+    selector = args.window or DEFAULT_TARGET
+    window = hypr.find(selector)
+    if window is None:
+        raise HyprlandError(
+            f"window not found: {selector}. "
+            "Use --list-windows to see open windows, or --global for system-wide input."
+        )
+    return selector, window.label, hypr
+
+
+def _safe_release(player: Player) -> None:
+    try:
+        player.release_all()
+    except HyprlandError:
+        pass
+
+
+def _focus_guard(hypr: Hyprland, target: Window):
+    def guard() -> bool:
+        active = hypr.active()
+        return active is not None and active.address == target.address
+
+    return guard
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Play a song into the focused window.")
+    parser = argparse.ArgumentParser(
+        description="Play a song into the Sober window (or the whole system)."
+    )
     parser.add_argument("song", nargs="?", help="path to a .song or .mid file")
     parser.add_argument("--list-layout", action="store_true", help="print the note/key table")
+    parser.add_argument("--list-windows", action="store_true", help="print Hyprland windows")
     parser.add_argument("--start-note", default="C3", help="note of the first white key")
     parser.add_argument("--bpm", type=float, help="override tempo for .song files")
     parser.add_argument(
@@ -122,19 +187,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tracks", help="1-based track list for MIDI, e.g. 1,2")
     parser.add_argument("--drums", action="store_true", help="include MIDI channel 10")
     parser.add_argument(
+        "--window",
+        metavar="SELECTOR",
+        help="target window: class:NAME, title:NAME or address:0x... "
+        f"(default {DEFAULT_TARGET})",
+    )
+    parser.add_argument(
+        "--global",
+        dest="global_input",
+        action="store_true",
+        help="send keys system-wide through uinput instead of one window",
+    )
+    parser.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="with --global: keep typing after focus leaves the game window",
+    )
+    parser.add_argument(
         "--no-shift-pause",
         action="store_true",
-        help="keep Shift held while pressing white keys (old behavior)",
+        help="uinput only: keep Shift held while pressing white keys (old behavior)",
     )
     parser.add_argument("--info", action="store_true", help="show MIDI tracks and exit")
     parser.add_argument("--countdown", type=float, default=3.0, help="seconds before playing")
     parser.add_argument("--dry-run", action="store_true", help="print the timeline, send nothing")
     args = parser.parse_args(argv)
+    if args.global_input and args.window:
+        parser.error("--window and --global are mutually exclusive")
 
     mapping = layout_mod.build_layout(_start_note(args.start_note))
 
     if args.list_layout:
         _print_layout(mapping)
+        return 0
+
+    if args.list_windows:
+        try:
+            _print_windows(Hyprland())
+        except HyprlandError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
         return 0
 
     if not args.song:
@@ -157,19 +249,47 @@ def main(argv: list[str] | None = None) -> int:
         print(format_events(events))
         return 0
 
-    if args.countdown > 0:
-        print(f"focus the game window, starting in {args.countdown:g}s...", file=sys.stderr)
-        import time
+    try:
+        selector, label, hypr = _resolve_target(args)
+    except HyprlandError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
+    guard = None
+    if args.global_input:
+        if hypr is not None and not args.no_guard:
+            target = hypr.active()
+            if target is not None:
+                guard = _focus_guard(hypr, target)
+        where = "system-wide (uinput)"
+        where += ", guard on" if guard else ", guard off"
+    else:
+        where = label
+
+    if args.countdown > 0:
+        print(f"target: {where}; starting in {args.countdown:g}s...", file=sys.stderr)
         time.sleep(args.countdown)
 
-    with VirtualKeyboard() as keyboard:
-        player = Player(keyboard, pause_shift=not args.no_shift_pause)
-        try:
-            player.play(events)
-        except KeyboardInterrupt:
-            print("interrupted", file=sys.stderr)
-            player.release_all()
+    if args.global_input:
+        keyboard = VirtualKeyboard(pause_shift=not args.no_shift_pause)
+    else:
+        keyboard = HyprlandKeyboard(selector, client=hypr)
+
+    player = Player(keyboard)
+
+    try:
+        with keyboard:
+            player.play(events, guard=guard)
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        _safe_release(player)
+    except PlaybackAborted:
+        print("focus left the game window: keys released, playback stopped", file=sys.stderr)
+        return 1
+    except HyprlandError as error:
+        _safe_release(player)
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

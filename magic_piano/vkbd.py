@@ -1,8 +1,8 @@
 """Virtual keyboard backed by Linux uinput.
 
 The compositor treats the created device as a real keyboard, so key events
-reach whichever window has focus. That is what we need for Sober/Roblox on
-Wayland, where xdotool does not work.
+reach whichever window has focus. That is the fallback when a targeted
+driver is not available.
 
 No third-party packages: everything goes straight to /dev/uinput.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import os
 import struct
+import time
 
 # ioctl constants from <linux/uinput.h> (x86_64)
 UI_DEV_SETUP = 0x405C5503
@@ -47,16 +48,34 @@ _SETUP = struct.Struct("HHHH80sI")
 
 
 class VirtualKeyboard:
-    """Create a uinput keyboard and emit key down/up events."""
+    """Create a uinput keyboard and emit key down/up events.
 
-    def __init__(self, name: str = "magic-piano", device: str = "/dev/uinput"):
+    ``press``/``release`` are the interface used by the player. They manage
+    the Shift key themselves, because a black key is Shift plus the white key
+    to its left.
+    """
+
+    def __init__(
+        self,
+        name: str = "magic-piano",
+        device: str = "/dev/uinput",
+        pause_shift: bool = True,
+        settle: float = 0.5,
+    ):
         self.name = name
+        self.pause_shift = pause_shift
+        self._held: dict[str, bool] = {}
+        self._shift_refs = 0
         self._fd = os.open(device, os.O_WRONLY | os.O_NONBLOCK)
         try:
             self._configure()
         except Exception:
             os.close(self._fd)
             raise
+        # The compositor learns about the device asynchronously. Keys sent
+        # before it is picked up are lost, and the first note is the one that
+        # suffers, so let it settle before the song starts.
+        time.sleep(settle)
 
     def _configure(self) -> None:
         fcntl.ioctl(self._fd, UI_SET_EVBIT, EV_KEY)
@@ -83,10 +102,51 @@ class VirtualKeyboard:
         self._emit(EV_KEY, code, 0)
         self.sync()
 
-    def tap(self, code: int, duration: float = 0.02) -> None:
-        # Kept for manual tests; the player uses key_down/key_up directly.
-        import time
+    def press(self, key: str, shift: bool) -> None:
+        if key in self._held:
+            return
+        code = KEY_CODES[key]
+        self._held[key] = shift
+        if shift:
+            if self._shift_refs == 0:
+                self.key_down(SHIFT)
+            self._shift_refs += 1
+            self.key_down(code)
+        elif self.pause_shift and self._shift_refs > 0:
+            # Roblox reads Shift at key-down. If Shift is held for a black
+            # key, a white key pressed meanwhile would sound as a sharp, so
+            # lift Shift for that key press and engage it again right after.
+            self.key_up(SHIFT)
+            self.key_down(code)
+            self.key_down(SHIFT)
+        else:
+            self.key_down(code)
 
+    def release(self, key: str, shift: bool) -> None:
+        if self._held.get(key) != shift:
+            return
+        del self._held[key]
+        code = KEY_CODES[key]
+        if not shift and self.pause_shift and self._shift_refs > 0:
+            self.key_up(SHIFT)
+            self.key_up(code)
+            self.key_down(SHIFT)
+        else:
+            self.key_up(code)
+        if shift:
+            self._shift_refs -= 1
+            if self._shift_refs == 0:
+                self.key_up(SHIFT)
+
+    def release_all(self) -> None:
+        for key, shift in list(self._held.items()):
+            self.release(key, shift)
+        while self._shift_refs > 0:
+            self._shift_refs -= 1
+            self.key_up(SHIFT)
+
+    def tap(self, code: int, duration: float = 0.02) -> None:
+        # Kept for manual tests; the player uses press/release directly.
         self.key_down(code)
         time.sleep(duration)
         self.key_up(code)
@@ -94,6 +154,7 @@ class VirtualKeyboard:
     def close(self) -> None:
         if self._fd is not None:
             try:
+                self.release_all()
                 fcntl.ioctl(self._fd, UI_DEV_DESTROY)
             finally:
                 os.close(self._fd)
