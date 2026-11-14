@@ -1,7 +1,0 @@
-// Chord test: three major triads, then C# major which mixes white and black keys.
-// The last chord must sound like a major triad one semitone above the first.
-bpm 60
-[1 3 5]
-[4 6 8]
-[5 7 9]
-[! 4 %]

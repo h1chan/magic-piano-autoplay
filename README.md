@@ -4,8 +4,8 @@
 virtualpiano.net и клоны). Читает `.song` или `.mid` и отправляет нажатия
 **только в окно игры** через IPC Hyprland, не трогая остальную систему.
 
-Проверено в Sober на Hyprland/Wayland: гамма, «Twinkle», аккорды и MIDI
-играют правильно; фокус при этом остаётся там, где был.
+Проверено в Sober на Hyprland/Wayland: гамма, аккорды и MIDI играют
+правильно; фокус при этом остаётся там, где был.
 
 ## Что уже работает
 
@@ -40,14 +40,32 @@ cd ~/Projects/magic-piano
 
 python3 -m magic_piano.play --list-layout              # нота -> клавиша
 python3 -m magic_piano.play --list-windows             # окна для --window
-python3 -m magic_piano.play songs/scale.song --dry-run # таймлайн без отправки
-python3 -m magic_piano.play songs/scale.song           # только в окно Sober
-
-python3 -m magic_piano.play songs/chords.song --dry-run # проверка аккордов
-python3 -m magic_piano.play songs/chords.song
+ls songs/*.mid                                         # что можно играть
+python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid" --info
+python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid" --dry-run
+python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid"
 ```
 
-MIDI-демо (Бетховен, «Ода к радости», мелодия + аккорды):
+## Коллекция
+
+В `songs/` лежит 100 пьес (классика, саундтреки игр и кино) плюс
+`Attack on Titan - Jiyuu no Tsubasa.mid`. Полный список с длительностью —
+[`songs/COLLECTION.md`](songs/COLLECTION.md).
+
+Сами `.mid` не коммитятся (`.gitignore`). Если их нужно восстановить или
+собрать заново:
+
+```bash
+python3 tools/fetch_collection.py --report   # что будет выбрано
+python3 tools/fetch_collection.py --write    # скачать и разложить в songs/
+```
+
+Скрипт берёт архив ADL Piano MIDI dataset
+(<https://github.com/lucasnfe/adl-piano-midi>), проверяет каждый файл
+парсером проекта и пишет манифест. MIDI-аранжировки принадлежат их авторам;
+файлы предназначены для личного использования.
+
+Маленький тест генератора MIDI:
 
 ```bash
 python3 tools/make_demo_midi.py
@@ -58,9 +76,9 @@ python3 -m magic_piano.play songs/ode_to_joy.mid --speed 0.9
 Свой файл: положи `.mid` в `songs/` и запусти
 
 ```bash
-python3 -m magic_piano.play songs/moonlight.mid --info
-python3 -m magic_piano.play songs/moonlight.mid --dry-run
-python3 -m magic_piano.play songs/moonlight.mid
+python3 -m magic_piano.play "songs/Мой файл.mid" --info
+python3 -m magic_piano.play "songs/Мой файл.mid" --dry-run
+python3 -m magic_piano.play "songs/Мой файл.mid"
 ```
 
 Опции: `--bpm`, `--gate`, `--speed`, `--transpose <полутона>`, `--no-fit`,
@@ -138,7 +156,7 @@ C4=8  C#4=Shift+8  D4=9  D#4=Shift+9  E4=0  F4=q  F#4=Q  G4=w ...
 ## Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v   # 53 теста
+python3 -m unittest discover -s tests -v   # 61 тест
 ```
 
 ## Микрофон
