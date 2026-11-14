@@ -28,62 +28,27 @@ def build_events(
     skipped: list[str] = []
     now = 0.0
     for token in tokens:
-        stroke = token_to_stroke(token, layout)
-        if stroke is None:
-            skipped.append(token)
-            now += beat
-            continue
-        char, shift = stroke
-        events.append(Event(now, True, char, shift))
-        events.append(Event(now + beat * gate, False, char, shift))
+        parts = token if isinstance(token, tuple) else (token,)
+        for part in parts:
+            stroke = token_to_stroke(part, layout)
+            if stroke is None:
+                skipped.append(part)
+                continue
+            char, shift = stroke
+            events.append(Event(now, True, char, shift))
+            events.append(Event(now + beat * gate, False, char, shift))
         now += beat
-    # At the same instant release first, then press, so nothing gets stuck.
-    events.sort(key=lambda event: (event.time, event.down))
+    _sort_events(events)
     return events, skipped
 
 
-def fit_octave(pitches: list[int], low: int, high: int) -> int:
-    """Octave shift that keeps the most notes inside [low, high]."""
-    best_shift, best_inside = 0, -1
-    for shift in range(-60, 61, 12):
-        inside = sum(1 for pitch in pitches if low <= pitch + shift <= high)
-        if inside > best_inside or (inside == best_inside and abs(shift) < abs(best_shift)):
-            best_shift, best_inside = shift, inside
-    return best_shift
+def _sort_events(events: list[Event]) -> None:
+    """Order events so Shift is never engaged while a white key is pressed.
 
-
-def build_events_from_notes(
-    notes,
-    layout: dict[int, tuple[str, bool]],
-    transpose: int = 0,
-    fit: bool = True,
-    gate: float = 0.98,
-    speed: float = 1.0,
-) -> tuple[list[Event], int, int]:
-    """Convert MIDI notes to key events.
-
-    Returns (events, octave_shift, dropped_notes). Notes outside the mapped
-    keyboard after fitting are dropped.
+    Releases come first at the same instant. Then white keys without Shift,
+    then black keys with Shift.
     """
-    if not notes:
-        return [], 0, 0
-    low, high = min(layout), max(layout)
-    shift = fit_octave([note.pitch for note in notes], low, high) if fit else 0
-
-    events: list[Event] = []
-    dropped = 0
-    for note in notes:
-        stroke = layout.get(note.pitch + transpose + shift)
-        if stroke is None:
-            dropped += 1
-            continue
-        char, needs_shift = stroke
-        start = note.start / speed
-        duration = max(note.duration * gate, 0.02)
-        events.append(Event(start, True, char, needs_shift))
-        events.append(Event(start + duration, False, char, needs_shift))
-    events.sort(key=lambda event: (event.time, event.down))
-    return events, shift, dropped
+    events.sort(key=lambda event: (event.time, event.down, event.shift))
 
 
 def wait_until(target: float) -> None:
@@ -97,8 +62,12 @@ def wait_until(target: float) -> None:
 
 
 class Player:
-    def __init__(self, keyboard: VirtualKeyboard):
+    def __init__(self, keyboard: VirtualKeyboard, pause_shift: bool = True):
         self.keyboard = keyboard
+        # Roblox reads Shift at key-down. If Shift is held for a black key,
+        # a white key pressed meanwhile would sound as a sharp, so lift Shift
+        # for that key press and engage it again right after.
+        self.pause_shift = pause_shift
         self._held: dict[str, bool] = {}
         self._shift_refs = 0
 
@@ -107,19 +76,32 @@ class Player:
         # its natural key is held (Shift would retrigger the same key).
         if char in self._held:
             return False
+        code = KEY_CODES[char]
+        self._held[char] = shift
         if shift:
             if self._shift_refs == 0:
                 self.keyboard.key_down(SHIFT)
             self._shift_refs += 1
-        self._held[char] = shift
-        self.keyboard.key_down(KEY_CODES[char])
+            self.keyboard.key_down(code)
+        elif self.pause_shift and self._shift_refs > 0:
+            self.keyboard.key_up(SHIFT)
+            self.keyboard.key_down(code)
+            self.keyboard.key_down(SHIFT)
+        else:
+            self.keyboard.key_down(code)
         return True
 
     def _release(self, char: str, shift: bool) -> None:
         if self._held.get(char) != shift:
             return
         del self._held[char]
-        self.keyboard.key_up(KEY_CODES[char])
+        code = KEY_CODES[char]
+        if not shift and self.pause_shift and self._shift_refs > 0:
+            self.keyboard.key_up(SHIFT)
+            self.keyboard.key_up(code)
+            self.keyboard.key_down(SHIFT)
+        else:
+            self.keyboard.key_up(code)
         if shift:
             self._shift_refs -= 1
             if self._shift_refs == 0:

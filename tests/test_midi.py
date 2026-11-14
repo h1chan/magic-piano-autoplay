@@ -2,9 +2,10 @@ import os
 import tempfile
 import unittest
 
+from magic_piano.arrange import choose_shift, melody_flags, prepare
 from magic_piano.layout import build_layout
-from magic_piano.midi_file import MidiError, inspect, read_notes
-from magic_piano.player import Event, build_events_from_notes, fit_octave
+from magic_piano.midi_file import MidiError, Note, inspect, read_notes
+from magic_piano.player import Event
 
 
 def vlq(value):
@@ -133,31 +134,64 @@ class ArrangeTest(unittest.TestCase):
     def setUp(self):
         self.layout = build_layout(48)  # C3..C#8
 
-    def test_fit_prefers_shift_inside_range(self):
-        high_notes = [120, 121, 122]  # above the C3..C#8 range
-        shift = fit_octave(high_notes, 48, 109)
+    def test_choose_shift_keeps_high_notes_in_range(self):
+        notes = [Note(0, 1, pitch, 64, 0) for pitch in (120, 121, 122)]
+        shift = choose_shift(notes, [False] * 3, 48, 109)
         self.assertLess(shift, 0)
-        self.assertTrue(all(48 <= pitch + shift <= 109 for pitch in high_notes))
+        self.assertTrue(all(48 <= note.pitch + shift <= 109 for note in notes))
+
+    def test_melody_weight_beats_bass_count(self):
+        melody = [Note(0, 1, 100, 64, 0), Note(1, 1, 101, 64, 0), Note(2, 1, 102, 64, 0)]
+        bass = [Note(0.5 + index, 0.5, 30, 64, 0) for index in range(8)]
+        notes = melody + bass
+        shift = choose_shift(notes, melody_flags(notes), 48, 109)
+        self.assertEqual(shift, 0)
+        self.assertTrue(all(48 <= note.pitch + shift <= 109 for note in melody))
 
     def test_events_keep_note_length(self):
-        from magic_piano.midi_file import Note
-
-        events, shift, dropped = build_events_from_notes(
-            [Note(1.0, 0.5, 60, 64, 0)], self.layout, transpose=0, fit=False, gate=1.0
+        events, report = prepare(
+            [Note(1.0, 0.5, 60, 64, 0)], self.layout, fit=False, gate=1.0
         )
-        self.assertEqual(shift, 0)
-        self.assertEqual(dropped, 0)
+        self.assertEqual(report.shift, 0)
+        self.assertEqual(report.dropped, 0)
         self.assertEqual(events[0], Event(1.0, True, "8", False))
         self.assertAlmostEqual(events[1].time, 1.5)
 
-    def test_out_of_range_dropped(self):
-        from magic_piano.midi_file import Note
-
-        events, _, dropped = build_events_from_notes(
-            [Note(0, 1, 20, 64, 0)], self.layout, fit=False
+    def test_out_of_range_dropped_without_folding(self):
+        events, report = prepare(
+            [Note(0, 1, 20, 64, 0)], self.layout, fit=False, fold=False
         )
         self.assertEqual(events, [])
-        self.assertEqual(dropped, 1)
+        self.assertEqual(report.dropped, 1)
+
+    def test_out_of_range_folded_by_octave(self):
+        events, report = prepare(
+            [Note(0, 1, 20, 64, 0)], self.layout, fit=False, fold=True
+        )
+        self.assertTrue(events)
+        self.assertEqual(report.folded, 1)
+        self.assertEqual(report.dropped, 0)
+
+    def test_shift_conflict_keeps_melody(self):
+        # F4 and F#4 share the physical key 'q'; the higher note is melody.
+        events, report = prepare(
+            [Note(0, 1, 65, 64, 0), Note(0, 1, 66, 64, 0)], self.layout, fit=False
+        )
+        self.assertEqual(report.conflicts, 1)
+        downs = [event for event in events if event.down]
+        self.assertEqual(len(downs), 1)
+        self.assertTrue(downs[0].shift)
+
+    def test_retrigger_is_not_lost(self):
+        events, report = prepare(
+            [Note(0, 0.6, 60, 64, 0), Note(0.5, 0.6, 60, 64, 0)],
+            self.layout,
+            fit=False,
+            gate=1.0,
+        )
+        downs = [event for event in events if event.down]
+        self.assertEqual(len(downs), 2)
+        self.assertEqual(report.conflicts, 0)
 
 
 if __name__ == "__main__":

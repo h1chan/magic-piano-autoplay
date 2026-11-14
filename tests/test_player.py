@@ -43,6 +43,15 @@ class BuildEventsTest(unittest.TestCase):
         events, _ = build_events(["1"], layout, beat=1.0, gate=0.5)
         self.assertEqual(events[1].time, 0.5)
 
+    def test_chord_events_and_order(self):
+        layout = build_layout(48)
+        # Mixed chord: white keys must be pressed before Shift is engaged.
+        events, skipped = build_events([("1", "!", "3")], layout, beat=1.0)
+        self.assertEqual(skipped, [])
+        downs = [event for event in events if event.down]
+        self.assertEqual([(event.char, event.shift) for event in downs],
+                         [("1", False), ("3", False), ("1", True)])
+
 
 class PlayerTest(unittest.TestCase):
     def test_shift_wraps_sharp_note(self):
@@ -80,6 +89,42 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(len(downs), 1)
         self.assertEqual(len(ups), 1)
         self.assertEqual(keyboard.calls[-1], ("up", SHIFT))
+
+    def test_white_key_lifts_shift_temporarily(self):
+        keyboard = FakeKeyboard()
+        player = Player(keyboard)
+        player.play(
+            [
+                Event(0, True, "1", True),    # C#: Shift down
+                Event(0.01, True, "3", False),  # E while C# held
+                Event(0.02, False, "3", False),
+                Event(0.03, False, "1", True),
+            ]
+        )
+        self.assertEqual(
+            keyboard.calls,
+            [
+                ("down", SHIFT),
+                ("down", KEY_CODES["1"]),
+                ("up", SHIFT),
+                ("down", KEY_CODES["3"]),
+                ("down", SHIFT),
+                ("up", SHIFT),
+                ("up", KEY_CODES["3"]),
+                ("down", SHIFT),
+                ("up", KEY_CODES["1"]),
+                ("up", SHIFT),
+            ],
+        )
+
+    def test_shift_pause_can_be_disabled(self):
+        keyboard = FakeKeyboard()
+        player = Player(keyboard, pause_shift=False)
+        player.play([Event(0, True, "1", True), Event(0.01, True, "3", False)])
+        self.assertEqual(
+            keyboard.calls,
+            [("down", SHIFT), ("down", KEY_CODES["1"]), ("down", KEY_CODES["3"])],
+        )
 
     def test_shift_conflict_is_skipped(self):
         # 'q' and 'Q' are different notes but the same physical key.
