@@ -16,6 +16,16 @@ class SongTest(unittest.TestCase):
     def test_note_names_allowed(self):
         self.assertEqual(parse("C4 D#4").tokens, ["C4", "D#4"])
 
+    def test_chords(self):
+        self.assertEqual(
+            parse("[1 3 5] 2").tokens, [("1", "3", "5"), "2"]
+        )
+        self.assertEqual(parse("[C4,E4,G4]").tokens, [("C4", "E4", "G4")])
+
+    def test_empty_chord_fails(self):
+        with self.assertRaises(ValueError):
+            parse("[]")
+
     def test_empty_song_fails(self):
         with self.assertRaises(ValueError):
             parse("// only a comment\n")
