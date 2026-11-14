@@ -81,6 +81,20 @@ class PlayerTest(unittest.TestCase):
         self.assertEqual(len(ups), 1)
         self.assertEqual(keyboard.calls[-1], ("up", SHIFT))
 
+    def test_shift_conflict_is_skipped(self):
+        # 'q' and 'Q' are different notes but the same physical key.
+        keyboard = FakeKeyboard()
+        player = Player(keyboard)
+        player.play(
+            [
+                Event(0, True, "q", False),
+                Event(0.01, True, "q", True),
+                Event(0.02, False, "q", True),
+                Event(0.03, False, "q", False),
+            ]
+        )
+        self.assertEqual(keyboard.calls, [("down", KEY_CODES["q"]), ("up", KEY_CODES["q"])])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-"""Turn a song into timed key events and play them."""
+"""Turn a song or MIDI notes into timed key events and play them."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def build_events(
     beat: float,
     gate: float = 0.9,
 ) -> tuple[list[Event], list[str]]:
-    """Build a sorted timeline. Returns (events, skipped tokens)."""
+    """Build a sorted timeline from sheet tokens. Returns (events, skipped)."""
     events: list[Event] = []
     skipped: list[str] = []
     now = 0.0
@@ -42,6 +42,50 @@ def build_events(
     return events, skipped
 
 
+def fit_octave(pitches: list[int], low: int, high: int) -> int:
+    """Octave shift that keeps the most notes inside [low, high]."""
+    best_shift, best_inside = 0, -1
+    for shift in range(-60, 61, 12):
+        inside = sum(1 for pitch in pitches if low <= pitch + shift <= high)
+        if inside > best_inside or (inside == best_inside and abs(shift) < abs(best_shift)):
+            best_shift, best_inside = shift, inside
+    return best_shift
+
+
+def build_events_from_notes(
+    notes,
+    layout: dict[int, tuple[str, bool]],
+    transpose: int = 0,
+    fit: bool = True,
+    gate: float = 0.98,
+    speed: float = 1.0,
+) -> tuple[list[Event], int, int]:
+    """Convert MIDI notes to key events.
+
+    Returns (events, octave_shift, dropped_notes). Notes outside the mapped
+    keyboard after fitting are dropped.
+    """
+    if not notes:
+        return [], 0, 0
+    low, high = min(layout), max(layout)
+    shift = fit_octave([note.pitch for note in notes], low, high) if fit else 0
+
+    events: list[Event] = []
+    dropped = 0
+    for note in notes:
+        stroke = layout.get(note.pitch + transpose + shift)
+        if stroke is None:
+            dropped += 1
+            continue
+        char, needs_shift = stroke
+        start = note.start / speed
+        duration = max(note.duration * gate, 0.02)
+        events.append(Event(start, True, char, needs_shift))
+        events.append(Event(start + duration, False, char, needs_shift))
+    events.sort(key=lambda event: (event.time, event.down))
+    return events, shift, dropped
+
+
 def wait_until(target: float) -> None:
     """Sleep coarse, then spin, for millisecond-level accuracy."""
     while True:
@@ -55,20 +99,30 @@ def wait_until(target: float) -> None:
 class Player:
     def __init__(self, keyboard: VirtualKeyboard):
         self.keyboard = keyboard
-        self._shift_held = 0
+        self._held: dict[str, bool] = {}
+        self._shift_refs = 0
 
-    def _press(self, char: str, shift: bool) -> None:
+    def _press(self, char: str, shift: bool) -> bool:
+        # The same key cannot sound twice, and a sharp cannot be added while
+        # its natural key is held (Shift would retrigger the same key).
+        if char in self._held:
+            return False
         if shift:
-            if self._shift_held == 0:
+            if self._shift_refs == 0:
                 self.keyboard.key_down(SHIFT)
-            self._shift_held += 1
+            self._shift_refs += 1
+        self._held[char] = shift
         self.keyboard.key_down(KEY_CODES[char])
+        return True
 
     def _release(self, char: str, shift: bool) -> None:
+        if self._held.get(char) != shift:
+            return
+        del self._held[char]
         self.keyboard.key_up(KEY_CODES[char])
         if shift:
-            self._shift_held -= 1
-            if self._shift_held == 0:
+            self._shift_refs -= 1
+            if self._shift_refs == 0:
                 self.keyboard.key_up(SHIFT)
 
     def play(self, events: list[Event], delay: float = 0.0) -> None:
@@ -81,10 +135,11 @@ class Player:
                 self._release(event.char, event.shift)
 
     def release_all(self) -> None:
-        # Safety net if play() is interrupted.
-        while self._shift_held > 0:
+        for char, shift in list(self._held.items()):
+            self._release(char, shift)
+        while self._shift_refs > 0:
             self.keyboard.key_up(SHIFT)
-            self._shift_held -= 1
+            self._shift_refs -= 1
 
 
 def format_events(events: list[Event]) -> str:
