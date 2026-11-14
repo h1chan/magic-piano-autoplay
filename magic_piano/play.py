@@ -17,10 +17,9 @@ import sys
 import time
 from collections import defaultdict
 
-from . import arrange
 from . import layout as layout_mod
+from . import loader
 from . import midi_file
-from . import song as song_mod
 from .hypr import (
     DEFAULT_TARGET,
     Hyprland,
@@ -29,10 +28,8 @@ from .hypr import (
     Window,
 )
 from .player import (
-    Event,
     PlaybackAborted,
     Player,
-    build_events,
     format_events,
 )
 from .vkbd import VirtualKeyboard
@@ -90,48 +87,32 @@ def _load_midi(path: str, args, mapping):
     if args.info:
         _print_midi_info(path, args.drums)
         return None
-    notes = midi_file.read_notes(
-        path, tracks=args.tracks, include_drums=args.drums
-    )
-    events, report = arrange.prepare(
-        notes,
+    loaded = loader.load(
+        path,
         mapping,
         transpose=args.transpose,
         fit=not args.no_fit,
-        gate=args.gate if args.gate is not None else 1.0,
+        gate=args.gate,
         speed=args.speed,
+        tracks=args.tracks,
+        drums=args.drums,
     )
-    parts = [f"{len(notes)} notes"]
-    if report.shift:
-        parts.append(f"octave shift {report.shift:+d}")
-    if report.folded:
-        parts.append(f"{report.folded} folded")
-    if report.dropped:
-        parts.append(f"{report.dropped} dropped")
-    if report.conflicts:
-        parts.append(f"{report.conflicts} key conflicts")
-    if events:
-        parts.append(f"{events[-1].time:.1f}s")
-    print(", ".join(parts), file=sys.stderr)
-    return events
+    print(loaded.summary(), file=sys.stderr)
+    return loaded.events
 
 
 def _load_song(path: str, args, mapping):
-    loaded = song_mod.load(path)
-    bpm = args.bpm or loaded.bpm
-    gate = args.gate if args.gate is not None else 0.9
-    events, skipped = build_events(
-        loaded.tokens, mapping, beat=60.0 / bpm, gate=gate
+    loaded = loader.load(
+        path,
+        mapping,
+        bpm=args.bpm,
+        gate=args.gate,
+        speed=args.speed,
     )
-    if args.speed != 1.0:
-        events = [
-            Event(event.time / args.speed, event.down, event.char, event.shift)
-            for event in events
-        ]
-    if skipped:
-        print(f"skipped outside range: {' '.join(skipped)}", file=sys.stderr)
-    print(f"{len(loaded.tokens)} notes, {bpm:g} bpm", file=sys.stderr)
-    return events
+    if loaded.skipped:
+        print(f"skipped outside range: {' '.join(loaded.skipped)}", file=sys.stderr)
+    print(f"{loaded.notes} notes, {loaded.bpm:g} bpm", file=sys.stderr)
+    return loaded.events
 
 
 def _resolve_target(args) -> tuple[str | None, str, Hyprland | None]:

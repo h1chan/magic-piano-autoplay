@@ -4,6 +4,7 @@ from magic_piano.layout import build_layout
 from magic_piano.player import (
     Event,
     PlaybackAborted,
+    PlaybackStopped,
     Player,
     build_events,
 )
@@ -128,6 +129,41 @@ class PlayerTest(unittest.TestCase):
             )
         self.assertEqual(keyboard.calls, [])
         self.assertTrue(keyboard.released)
+
+    def test_stop_releases_held_keys(self):
+        import threading
+
+        keyboard = FakeKeyboard()
+        player = Player(keyboard)
+        stop = threading.Event()
+
+        def on_event(done, total):
+            self.assertEqual((done, total), (1, 2))
+            stop.set()
+
+        with self.assertRaises(PlaybackStopped):
+            player.play(
+                [
+                    Event(0, True, "1", False),
+                    Event(0.05, False, "1", False),
+                ],
+                stop=stop.is_set,
+                on_event=on_event,
+            )
+        self.assertEqual(
+            keyboard.calls,
+            [("press", "1", False), ("release", "1", False)],
+        )
+        self.assertTrue(keyboard.released)
+
+    def test_progress_callback_runs_for_every_event(self):
+        keyboard = FakeKeyboard()
+        seen = []
+        Player(keyboard).play(
+            [Event(0, True, "1", False), Event(0.001, False, "1", False)],
+            on_event=lambda done, total: seen.append((done, total)),
+        )
+        self.assertEqual(seen, [(1, 2), (2, 2)])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,10 @@ class PlaybackAborted(RuntimeError):
     """The focus guard stopped playback before a key could go elsewhere."""
 
 
+class PlaybackStopped(RuntimeError):
+    """The caller asked playback to stop."""
+
+
 @dataclass(frozen=True)
 class Event:
     time: float
@@ -65,14 +69,19 @@ def _sort_events(events: list[Event]) -> None:
     events.sort(key=lambda event: (event.time, event.down, event.shift))
 
 
-def wait_until(target: float) -> None:
-    """Sleep coarse, then spin, for millisecond-level accuracy."""
+def wait_until(target: float, stop=None) -> None:
+    """Sleep coarse, then spin, for millisecond-level accuracy.
+
+    ``stop`` is polled while waiting so a long note can be interrupted.
+    """
     while True:
+        if stop is not None and stop():
+            raise PlaybackStopped("playback cancelled")
         remaining = target - time.perf_counter()
         if remaining <= 0:
             return
         if remaining > 0.002:
-            time.sleep(remaining - 0.001)
+            time.sleep(min(remaining - 0.001, 0.05))
 
 
 class Player:
@@ -95,10 +104,21 @@ class Player:
         del self._held[char]
         self.keyboard.release(char, shift)
 
-    def play(self, events: list[Event], delay: float = 0.0, guard=None) -> None:
+    def play(
+        self,
+        events: list[Event],
+        delay: float = 0.0,
+        guard=None,
+        stop=None,
+        on_event=None,
+    ) -> None:
         start = time.perf_counter() + delay
-        for event in events:
-            wait_until(start + event.time)
+        for index, event in enumerate(events):
+            try:
+                wait_until(start + event.time, stop)
+            except PlaybackStopped:
+                self.release_all()
+                raise
             if guard is not None and not guard():
                 self.release_all()
                 raise PlaybackAborted("focus left the target window")
@@ -106,6 +126,8 @@ class Player:
                 self._press(event.char, event.shift)
             else:
                 self._release(event.char, event.shift)
+            if on_event is not None:
+                on_event(index + 1, len(events))
 
     def release_all(self) -> None:
         for char, shift in list(self._held.items()):

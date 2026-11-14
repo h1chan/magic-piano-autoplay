@@ -38,13 +38,43 @@ virtualpiano.net и клоны). Читает `.song` или `.mid` и отпр�
 ```bash
 cd ~/Projects/magic-piano
 
+./magic-piano                                          # интерактивный интерфейс
 python3 -m magic_piano.play --list-layout              # нота -> клавиша
 python3 -m magic_piano.play --list-windows             # окна для --window
-ls songs/*.mid                                         # что можно играть
-python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid" --info
-python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid" --dry-run
 python3 -m magic_piano.play "songs/Classical - Debussy - Clair de Lune.mid"
 ```
+
+## Интерфейс
+
+```bash
+python3 -m magic_piano
+```
+
+Полноэкранный список песен: название, длительность и число нот, поиск,
+категории, выбор окна и прогресс воспроизведения. Игра запускается в фоне,
+терминал при этом остаётся отзывчивым: можно остановить песню или выбрать
+следующую.
+
+| клавиши | действие |
+|---------|----------|
+| `Up`/`Down`, `j`/`k` | переход по списку |
+| `PgUp`/`PgDn`, `g`/`G` | страница, начало, конец |
+| `Enter`, `Space` | играть / остановить |
+| `s` | остановить |
+| `+` / `-` | скорость 0.25–3.00 |
+| `t` / `T` | транспонировать на полутон |
+| `0` | сбросить скорость и транспонирование |
+| `/` | поиск по названию (`Enter` — применить, `Esc` — очистить) |
+| `c` | следующая категория |
+| `w` | выбрать окно из списка |
+| `u` | адресный ввод / системный uinput |
+| `r` | перечитать папку `songs/` |
+| `?` | справка |
+| `q` | выход (с остановкой игры) |
+
+Опции: `--songs DIR` — другая папка, `--window SELECTOR` — стартовое окно,
+`--global` — сразу системный ввод. Отдельного графического окна нет:
+интерфейс работает в любом терминале и не требует сторонних пакетов.
 
 ## Коллекция
 
@@ -156,7 +186,7 @@ C4=8  C#4=Shift+8  D4=9  D#4=Shift+9  E4=0  F4=q  F#4=Q  G4=w ...
 ## Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v   # 61 тест
+python3 -m unittest discover -s tests -v   # 78 тестов
 ```
 
 ## Микрофон
