@@ -96,14 +96,6 @@ python3 tools/fetch_collection.py --write    # скачать и разложи�
 парсером проекта и пишет манифест. MIDI-аранжировки принадлежат их авторам;
 файлы предназначены для личного использования.
 
-Маленький тест генератора MIDI:
-
-```bash
-python3 tools/make_demo_midi.py
-python3 -m magic_piano.play songs/ode_to_joy.mid --dry-run
-python3 -m magic_piano.play songs/ode_to_joy.mid --speed 0.9
-```
-
 Свой файл: положи `.mid` в `songs/` и запусти
 
 ```bash
@@ -201,18 +193,6 @@ C7=m
 ```bash
 python3 -m unittest discover -s tests -v   # 88 тестов
 ```
-
-## Микрофон
-
-`tools/watch_mic.py` показывает каждое изменение громкости/мьюта
-микрофона и окно, активное в этот момент:
-
-```bash
-python3 tools/watch_mic.py --log /tmp/mic.log
-```
-
-Запусти на время игры: если громкость меняется сама, в логе будет видно,
-когда и при каком окне. Скрипт только читает состояние и ничего не меняет.
 
 ## Дорожная карта
 
