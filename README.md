@@ -30,13 +30,13 @@ virtualpiano.net и клоны). Читает `.song` или `.mid` и отпр�
 - Linux + Hyprland (для адресной доставки клавиш через IPC);
 - Python 3.10+, без сторонних пакетов;
 - активная раскладка US (проверить: `hyprctl devices | grep 'active keymap'`);
-- только для `--global`: доступ на запись в `/dev/uinput` (у h1chan есть
-  через ACL).
+- только для `--global`: доступ на запись в `/dev/uinput` (проще всего
+  через ACL для своего пользователя).
 
 ## Быстрый старт
 
 ```bash
-cd ~/Projects/magic-piano
+git clone <этот репозиторий> magic-piano && cd magic-piano
 
 ./magic-piano                                          # интерактивный интерфейс
 python3 -m magic_piano.play --list-layout              # нота -> клавиша
