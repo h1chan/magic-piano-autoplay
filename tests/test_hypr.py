@@ -92,7 +92,29 @@ class KeyboardTest(unittest.TestCase):
         self.assertEqual(len(client.calls), 4)
         self.assertIn('state="up"', client.calls[2])
         self.assertIn('state="up"', client.calls[3])
-        self.assertEqual(keyboard._held, {})
+        self.assertEqual(keyboard._held, set())
+
+    def test_send_many_uses_one_ipc_call(self):
+        client = FakeClient()
+        keyboard = HyprlandKeyboard("class:X", client=client)
+        keyboard.send_many(
+            [("1", False, "down"), ("2", True, "down")]
+        )
+        self.assertEqual(len(client.calls), 1)
+        code = client.calls[0]
+        self.assertIn('key="1"', code)
+        self.assertIn('key="2"', code)
+        self.assertIn('mods="SHIFT"', code)
+        self.assertEqual(keyboard._held, {("1", False), ("2", True)})
+
+    def test_address_targeting_is_exact(self):
+        client = FakeClient()
+        keyboard = HyprlandKeyboard("class:X", client=client, address="0xabc")
+        keyboard.press("1", False)
+        code = client.calls[0]
+        self.assertIn('v.address=="0xabc"', code)
+        self.assertIn("window=w", code)
+        self.assertNotIn('v.class=="X"', code)
 
     def test_address_selector(self):
         client = FakeClient()

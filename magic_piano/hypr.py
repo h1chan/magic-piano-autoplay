@@ -160,43 +160,75 @@ class Hyprland:
 class HyprlandKeyboard:
     """Keyboard driver that sends every key to one Hyprland window."""
 
-    def __init__(self, selector: str | None = None, client: Hyprland | None = None):
+    def __init__(
+        self,
+        selector: str | None = None,
+        client: Hyprland | None = None,
+        address: str | None = None,
+    ):
         self.selector = parse_selector(selector) if selector else None
+        self.address = address
         self.client = client or Hyprland()
-        self._held: dict[str, bool] = {}
+        self._held: set[tuple[str, bool]] = set()
 
-    def _snippet(self, key: str, shift: bool, state: str) -> str:
+    def _call(self, key: str, shift: bool, state: str, targeted: bool) -> str:
         mods = "SHIFT" if shift else ""
         args = (
             f"mods={lua_string(mods)}, key={lua_string(key)}, "
             f"state={lua_string(state)}"
         )
-        if self.selector is None:
-            return f"hl.dispatch(hl.dsp.send_key_state({{{args}}}))"
-        kind, value = self.selector
+        if targeted:
+            args += ", window=w"
+        return f"hl.dispatch(hl.dsp.send_key_state({{{args}}}))"
+
+    def _snippet(self, actions: list[tuple[str, bool, str]]) -> str:
+        targeted = self.selector is not None or self.address is not None
+        body = "; ".join(
+            self._call(key, shift, state, targeted)
+            for key, shift, state in actions
+        )
+        if not targeted:
+            return body
+        if self.address is not None:
+            # Addresses are unique: two windows with the same class can never
+            # steal each other's notes.
+            kind, value = "address", self.address
+        else:
+            kind, value = self.selector
         return (
             "local w=nil; for _,v in ipairs(hl.get_windows()) do "
             f"if v.{kind}=={lua_string(value)} then w=v end end; "
-            f"if w then hl.dispatch(hl.dsp.send_key_state({{{args}, window=w}})) end"
+            f"if w then {body} end"
         )
 
+    def send_many(self, actions: list[tuple[str, bool, str]]) -> None:
+        """Send several key states in one IPC round-trip (used for chords)."""
+        if not actions:
+            return
+        # Update the bookkeeping first so a failed dispatch still leaves the
+        # keys in the set that release_all() lifts.
+        for key, shift, state in actions:
+            if state == "down":
+                self._held.add((key, shift))
+            else:
+                self._held.discard((key, shift))
+        self.client.eval(self._snippet(actions))
+
     def _send(self, key: str, shift: bool, state: str) -> None:
-        self.client.eval(self._snippet(key, shift, state))
+        self.send_many([(key, shift, state)])
 
     def press(self, key: str, shift: bool) -> None:
-        if key in self._held:
+        if (key, shift) in self._held:
             return
-        self._held[key] = shift
         self._send(key, shift, "down")
 
     def release(self, key: str, shift: bool) -> None:
-        if self._held.get(key) != shift:
+        if (key, shift) not in self._held:
             return
-        del self._held[key]
         self._send(key, shift, "up")
 
     def release_all(self) -> None:
-        for key, shift in list(self._held.items()):
+        for key, shift in sorted(self._held, key=lambda item: not item[1]):
             self.release(key, shift)
 
     def close(self) -> None:

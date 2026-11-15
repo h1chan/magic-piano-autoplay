@@ -58,6 +58,15 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(normal.bpm, 120)
         self.assertAlmostEqual(normal.events[-1].time, 0.95)
         self.assertAlmostEqual(fast.events[-1].time, normal.events[-1].time / 2)
+        self.assertAlmostEqual(fast.duration, normal.duration / 2)
+
+    def test_midi_duration_follows_speed(self):
+        path = self.root / "one.mid"
+        tiny_midi(path)
+        normal = loader.load(path, self.mapping)
+        fast = loader.load(path, self.mapping, speed=2.0)
+        self.assertAlmostEqual(normal.duration, 0.5)
+        self.assertAlmostEqual(fast.duration, 0.25)
 
     def test_transpose_moves_pitch(self):
         path = self.root / "one.mid"

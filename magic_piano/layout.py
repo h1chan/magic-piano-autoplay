@@ -10,7 +10,10 @@ character in upper case (or the shifted digit) plays the sharp:
     1=C  !=C#  2=D  @=D#  3=E  4=F  $=F#  5=G  %=G#  6=A  ^=A#  7=B
 
 This is the layout used by virtualpiano.net and by Roblox piano games that
-copy it. If the game disagrees, only this module needs to change.
+copy it. The default first key is C2, which matches the 61 playable keys of
+the Roblox Magic Piano keyboard (the extra keys at both ends of its 88-key
+piano are mouse-only and reuse the same labels). If the game disagrees, only
+this module needs to change.
 """
 
 from __future__ import annotations
@@ -48,10 +51,11 @@ def midi_to_note(value: int) -> str:
     return f"{NOTE_NAMES[value % 12]}{value // 12 - 1}"
 
 
-def build_layout(start_note: int = 48) -> dict[int, tuple[str, bool]]:
+def build_layout(start_note: int = 36) -> dict[int, tuple[str, bool]]:
     """Map MIDI note -> (key char, shift needed).
 
-    ``start_note`` is the note played by the first white key (default C3).
+    ``start_note`` is the note played by the first white key (default C2,
+    matching the Roblox Magic Piano keyboard).
     """
     if not 0 <= start_note <= 127:
         raise ValueError(f"start note out of MIDI range: {start_note}")
@@ -61,8 +65,9 @@ def build_layout(start_note: int = 48) -> dict[int, tuple[str, bool]]:
         octave, step = divmod(index, 7)
         white = start_note + 12 * octave + WHITE_SEMITONES[step]
         result[white] = (char, False)
-        # E and B have no black key above them.
-        if WHITE_SEMITONES[step] not in (4, 11):
+        # E and B have no black key above them, and the black key above the
+        # last white key would fall outside the mapped range.
+        if index + 1 < len(WHITE_KEYS) and WHITE_SEMITONES[step] not in (4, 11):
             result[white + 1] = (char, True)
     return result
 

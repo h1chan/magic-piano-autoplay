@@ -28,7 +28,7 @@ class FakeUinput(VirtualKeyboard):
     def __init__(self, pause_shift=True):
         self.name = "test"
         self.pause_shift = pause_shift
-        self._held = {}
+        self._held = set()
         self._shift_refs = 0
         self._fd = None
         self.calls = []
@@ -113,7 +113,7 @@ class ShiftTest(unittest.TestCase):
         keyboard.press("1", True)
         keyboard.press("3", False)
         keyboard.release_all()
-        self.assertEqual(keyboard._held, {})
+        self.assertEqual(keyboard._held, set())
         self.assertEqual(keyboard._shift_refs, 0)
         self.assertEqual(keyboard.calls[-1], ("up", KEY_CODES["3"]))
 

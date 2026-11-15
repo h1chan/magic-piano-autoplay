@@ -64,7 +64,7 @@ class VirtualKeyboard:
     ):
         self.name = name
         self.pause_shift = pause_shift
-        self._held: dict[str, bool] = {}
+        self._held: set[tuple[str, bool]] = set()
         self._shift_refs = 0
         self._fd = os.open(device, os.O_WRONLY | os.O_NONBLOCK)
         try:
@@ -103,10 +103,10 @@ class VirtualKeyboard:
         self.sync()
 
     def press(self, key: str, shift: bool) -> None:
-        if key in self._held:
+        if (key, shift) in self._held:
             return
         code = KEY_CODES[key]
-        self._held[key] = shift
+        self._held.add((key, shift))
         if shift:
             if self._shift_refs == 0:
                 self.key_down(SHIFT)
@@ -123,9 +123,9 @@ class VirtualKeyboard:
             self.key_down(code)
 
     def release(self, key: str, shift: bool) -> None:
-        if self._held.get(key) != shift:
+        if (key, shift) not in self._held:
             return
-        del self._held[key]
+        self._held.discard((key, shift))
         code = KEY_CODES[key]
         if not shift and self.pause_shift and self._shift_refs > 0:
             self.key_up(SHIFT)
@@ -138,8 +138,16 @@ class VirtualKeyboard:
             if self._shift_refs == 0:
                 self.key_up(SHIFT)
 
+    def send_many(self, actions: list[tuple[str, bool, str]]) -> None:
+        for key, shift, state in actions:
+            if state == "down":
+                self.press(key, shift)
+            else:
+                self.release(key, shift)
+
     def release_all(self) -> None:
-        for key, shift in list(self._held.items()):
+        # Black keys first (they need Shift), then white keys.
+        for key, shift in sorted(self._held, key=lambda item: not item[1]):
             self.release(key, shift)
         while self._shift_refs > 0:
             self._shift_refs -= 1

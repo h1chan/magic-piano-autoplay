@@ -34,7 +34,7 @@ from magic_piano.layout import build_layout  # noqa: E402
 DATASET = "https://raw.githubusercontent.com/lucasnfe/adl-piano-midi/master/midi/adl-piano-midi.zip"
 CACHE = Path.home() / ".cache" / "magic-piano" / "adl-piano-midi.zip"
 SONGS = Path(__file__).resolve().parent.parent / "songs"
-LAYOUT = build_layout(48)
+LAYOUT = build_layout()  # the 61 playable keys C2..C7 of the game
 
 # (category, title as written to disk, source path fragments)
 COLLECTION: list[tuple[str, str, tuple[str, ...]]] = [

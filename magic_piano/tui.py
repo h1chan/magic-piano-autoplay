@@ -197,6 +197,7 @@ class Playback:
         self.events_total = 0
         self.started_at = 0.0
         self.elapsed_at_stop = 0.0
+        self.countdown_left = 0.0
 
     def start(
         self,
@@ -208,6 +209,7 @@ class Playback:
         gate: float | None = None,
         selector: str = DEFAULT_TARGET,
         global_input: bool = False,
+        countdown: float = 0.0,
     ) -> None:
         self.stop(wait=True)
         self._stop = threading.Event()
@@ -221,15 +223,19 @@ class Playback:
         self.events_total = 0
         self.started_at = 0.0
         self.elapsed_at_stop = 0.0
+        self.countdown_left = countdown
         self._thread = threading.Thread(
             target=self._run,
-            args=(path, mapping, speed, transpose, gate, selector, global_input),
+            args=(
+                path, mapping, speed, transpose, gate, selector,
+                global_input, countdown,
+            ),
             daemon=True,
         )
         self._thread.start()
 
     def stop(self, wait: bool = True) -> None:
-        if self.state in ("loading", "playing"):
+        if self.state in ("loading", "countdown", "playing"):
             if self.state == "playing" and self.started_at:
                 self.elapsed_at_stop = min(
                     self.total, max(0.0, time.perf_counter() - self.started_at)
@@ -238,7 +244,7 @@ class Playback:
         thread = self._thread
         if wait and thread is not None and thread.is_alive():
             thread.join(timeout=1.5)
-        if self.state in ("loading", "playing"):
+        if self.state in ("loading", "countdown", "playing"):
             self.state = "stopped"
 
     def elapsed(self) -> float:
@@ -259,6 +265,7 @@ class Playback:
         gate: float | None,
         selector: str,
         global_input: bool,
+        countdown: float,
     ) -> None:
         try:
             loaded = loader.load(
@@ -276,10 +283,44 @@ class Playback:
                 self.state = "stopped"
                 return
 
+            if countdown > 0:
+                self.state = "countdown"
+                deadline = time.perf_counter() + countdown
+                while time.perf_counter() < deadline:
+                    if self._stop.is_set():
+                        self.state = "stopped"
+                        return
+                    self.countdown_left = max(0.0, deadline - time.perf_counter())
+                    time.sleep(0.05)
+                self.countdown_left = 0.0
+                if self._stop.is_set():
+                    self.state = "stopped"
+                    return
+
             guard = None
             if global_input:
                 keyboard = VirtualKeyboard()
                 self.where = "system-wide (uinput)"
+                try:
+                    hypr = Hyprland()
+                    # Prefer the game window: if focus is still in the
+                    # terminal after the countdown, the guard aborts instead
+                    # of typing the song into the terminal.
+                    target = hypr.find(DEFAULT_TARGET) or hypr.active()
+                except HyprlandError:
+                    target = None
+                if target is not None:
+                    start_address = target.address
+                    checked = [0.0]
+
+                    def guard() -> bool:
+                        # Do not type into the terminal if focus moves away.
+                        now = time.perf_counter()
+                        if now - checked[0] < 0.2:
+                            return True
+                        checked[0] = now
+                        current = hypr.active()
+                        return current is not None and current.address == start_address
             else:
                 hypr = Hyprland()
                 window = hypr.find(selector)
@@ -288,7 +329,9 @@ class Playback:
                         f"window not found: {selector}. "
                         "Press w to choose another window."
                     )
-                keyboard = HyprlandKeyboard(selector, client=hypr)
+                keyboard = HyprlandKeyboard(
+                    selector, client=hypr, address=window.address
+                )
                 self.where = window.title or window.class_name
 
             player = Player(keyboard)
@@ -350,7 +393,7 @@ class App:
     ):
         self.library = Library(songs)
         self.playback = Playback()
-        self.mapping = layout_mod.build_layout(48)
+        self.mapping = layout_mod.build_layout()
         self.selector = selector
         self.target_label = "Sober"
         self.global_input = global_input
@@ -473,16 +516,20 @@ class App:
             transpose=self.transpose,
             selector=self.selector,
             global_input=self.global_input,
+            countdown=3.0 if self.global_input else 0.0,
         )
-        self._set_message(f"playing {track.title}", "info")
+        if self.global_input:
+            self._set_message("starting in 3s - focus the game window", "warn")
+        else:
+            self._set_message(f"playing {track.title}", "info")
 
     def _stop(self) -> None:
-        if self.playback.state in ("loading", "playing"):
+        if self.playback.state in ("loading", "countdown", "playing"):
             self.playback.stop(wait=False)
             self._set_message("stopped", "info")
 
     def _toggle_play(self) -> None:
-        if self.playback.state in ("loading", "playing"):
+        if self.playback.state in ("loading", "countdown", "playing"):
             self._stop()
         else:
             self._play()
@@ -529,7 +576,7 @@ class App:
         self.global_input = not self.global_input
         self._refresh_target()
         if self.global_input:
-            self._set_message("system-wide uinput (no focus guard)", "warn")
+            self._set_message("system-wide uinput: 3s countdown, focus guard", "warn")
         else:
             self._set_message(f"target: {self.target_label}", "info")
 
@@ -737,7 +784,7 @@ class App:
             selected = index == self.cursor
             playing = (
                 self.playback.path == track.path
-                and self.playback.state in ("loading", "playing")
+                and self.playback.state in ("loading", "countdown", "playing")
             )
             marker = ">" if selected else " "
             dot = "*" if playing else " "
@@ -778,7 +825,7 @@ class App:
         rows.append(("", 0))
         if self.playback.path == track.path:
             state = self.playback.state
-            if state in ("loading", "playing"):
+            if state in ("loading", "countdown", "playing"):
                 rows.append(("now playing", curses.A_BOLD | self._color(2)))
             elif state == "done":
                 rows.append(("finished", self._color(2)))
@@ -797,6 +844,10 @@ class App:
         if playback.state == "loading":
             text = f"loading {playback.title}..."
             kind = "info"
+        elif playback.state == "countdown":
+            left = max(1, int(playback.countdown_left + 0.999))
+            text = f"starting in {left}s - focus the game window"
+            kind = "warn"
         elif playback.state == "playing":
             text = f"playing {playback.title}  ->  {playback.where}"
             kind = "ok"
@@ -819,7 +870,7 @@ class App:
 
     def _draw_progress(self, y: int, width: int) -> None:
         state = self.playback.state
-        if state not in ("loading", "playing", "done", "stopped"):
+        if state not in ("loading", "countdown", "playing", "done", "stopped"):
             total = sum(t.duration or 0.0 for t in self.library.tracks)
             scanned = sum(1 for t in self.library.tracks if t.scanned)
             text = (

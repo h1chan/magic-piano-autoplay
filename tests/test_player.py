@@ -27,6 +27,19 @@ class FakeKeyboard:
         self.released = True
 
 
+class BatchKeyboard(FakeKeyboard):
+    """Keyboard that receives one call per chord."""
+
+    def __init__(self):
+        super().__init__()
+        self.batches = []
+
+    def send_many(self, actions):
+        self.batches.append(actions)
+        for key, shift, state in actions:
+            self.calls.append(("press" if state == "down" else "release", key, shift))
+
+
 class BuildEventsTest(unittest.TestCase):
     def test_timing_and_order(self):
         layout = build_layout(48)
@@ -82,8 +95,8 @@ class PlayerTest(unittest.TestCase):
             keyboard.calls, [("press", "q", False), ("release", "q", False)]
         )
 
-    def test_shift_conflict_is_skipped(self):
-        # 'q' and 'Q' are different notes but the same physical key.
+    def test_natural_and_sharp_are_independent(self):
+        # 'q' and 'Q' are different notes: the game can sound both at once.
         keyboard = FakeKeyboard()
         Player(keyboard).play(
             [
@@ -94,7 +107,13 @@ class PlayerTest(unittest.TestCase):
             ]
         )
         self.assertEqual(
-            keyboard.calls, [("press", "q", False), ("release", "q", False)]
+            keyboard.calls,
+            [
+                ("press", "q", False),
+                ("press", "q", True),
+                ("release", "q", True),
+                ("release", "q", False),
+            ],
         )
 
     def test_release_all_clears_held_notes(self):
@@ -164,6 +183,33 @@ class PlayerTest(unittest.TestCase):
             on_event=lambda done, total: seen.append((done, total)),
         )
         self.assertEqual(seen, [(1, 2), (2, 2)])
+
+    def test_chord_is_sent_in_one_batch(self):
+        keyboard = BatchKeyboard()
+        Player(keyboard).play(
+            [
+                Event(0, True, "1", False),
+                Event(0, True, "3", False),
+                Event(0.01, False, "1", False),
+                Event(0.01, False, "3", False),
+            ]
+        )
+        self.assertEqual(
+            keyboard.batches,
+            [
+                [("1", False, "down"), ("3", False, "down")],
+                [("1", False, "up"), ("3", False, "up")],
+            ],
+        )
+        self.assertEqual(
+            keyboard.calls,
+            [
+                ("press", "1", False),
+                ("press", "3", False),
+                ("release", "1", False),
+                ("release", "3", False),
+            ],
+        )
 
 
 if __name__ == "__main__":

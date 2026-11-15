@@ -71,7 +71,9 @@ def load(
             gate=gate if gate is not None else 1.0,
             speed=speed,
         )
-        duration = max((note.start + note.duration for note in notes), default=0.0)
+        # Use the timeline, not the raw MIDI length: the progress bar must
+        # match what is actually played at the current speed.
+        duration = events[-1].time if events else 0.0
         return Loaded(
             events=events,
             notes=len(notes),
